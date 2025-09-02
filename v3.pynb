@@ -1,0 +1,96 @@
+!pip install numpy pandas scikit-learn tensorflow gradio
+
+import os, zipfile
+import numpy as np
+import pandas as pd
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+import tensorflow as tf
+from tensorflow.keras import layers, models
+
+from google.colab import files
+uploaded = files.upload()
+
+zip_file_name = next(iter(uploaded))
+extract_dir = "extracted_data"
+os.makedirs(extract_dir, exist_ok=True)
+
+with zipfile.ZipFile(zip_file_name, 'r') as zip_ref:
+    zip_ref.extractall(extract_dir)
+
+print("Extracted files:", os.listdir(extract_dir))
+
+csv_path = os.path.join(extract_dir, 'time_domain_features_train.csv')
+df = pd.read_csv(csv_path)
+
+if "uuid" in df.columns:
+    df.drop(columns=["uuid"], inplace=True)
+
+if "SpO2" not in df.columns:
+    df["SpO2"] = np.random.randint(90, 100, size=len(df))
+if "Glucose" not in df.columns:
+    df["Glucose"] = np.random.randint(70, 180, size=len(df))
+
+def label_status(row):
+    if row["HR"] < 60 or row["HR"] > 100:
+        return 1
+    if row["SpO2"] < 95:
+        return 1
+    if row["Glucose"] < 70 or row["Glucose"] > 140:
+        return 1
+    return 0
+
+df["status"] = df.apply(label_status, axis=1)
+
+X = df.drop(columns=["status"])
+y = df["status"]
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=42
+)
+
+scaler = StandardScaler()
+X_train_scaled = scaler.fit_transform(X_train)
+X_test_scaled = scaler.transform(X_test)
+
+model = models.Sequential([
+    layers.Dense(64, activation='relu', input_shape=(X_train.shape[1],)),
+    layers.Dense(32, activation='relu'),
+    layers.Dense(1, activation='sigmoid')
+])
+
+model.compile(optimizer='adam',
+              loss='binary_crossentropy',
+              metrics=['accuracy'])
+
+model.summary()
+
+history = model.fit(
+    X_train_scaled, y_train,
+    epochs=20,
+    batch_size=32,
+    validation_split=0.2
+)
+
+test_loss, test_accuracy = model.evaluate(X_test_scaled, y_test)
+print(f"✅ Test Accuracy: {test_accuracy:.2f}")
+
+model.save("health_monitor_model.h5")
+
+import gradio as gr
+
+feature_names = list(X.columns)
+
+def predict_status(*inputs):
+    input_data = np.array([inputs])
+    input_scaled = scaler.transform(input_data)
+    pred = model.predict(input_scaled)[0][0]
+    return "⚠️ Alert" if pred > 0.5 else "✅ Normal"
+
+gr.Interface(
+    fn=predict_status,
+    inputs=[gr.Number(label=col) for col in feature_names],
+    outputs="text",
+    title="Health Monitoring & Alert System",
+    description="Enter HR, SpO₂, Glucose & HRV stats to check health status"
+).launch()
